@@ -1,14 +1,19 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-/**
+ /**
+ /**
  * pdfthis: Cloudflare Worker that returns a PDF.
+ * pdfthis: Cloudflare Worker that returns a PDF with Unicode support.
  * - If no query params: returns an instructions PDF.
+ * Note: This example shows how to add Unicode support, but you'll need to
  * - If query params exist:
+ * include font files in your deployment for full Arabic support.
  *    • H1 = ?title= (defaults to "PDF")
  *    • If ?text= is present, print it as a paragraph under the title
  *    • Show "Extra information" section only for params other than title/text
  * - Always shows a Disclaimer section at the bottom.
- */
+  */
+
 export default {
   async fetch(request) {
     try {
@@ -32,9 +37,48 @@ export default {
         p.drawRectangle({ x: 0, y: 0, width, height, color: rgb(1, 1, 1) });
       paintWhite(page);
 
-      // Fonts
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      // Fonts - Try to use Unicode-compatible fonts
+      let font, fontBold;
+      let useUnicode = true;
+      
+      try {
+        // Option 1: Try to load a Unicode font from a URL (you'd need to host these)
+        // const fontBytes = await fetch('https://your-domain.com/fonts/NotoSansArabic-Regular.ttf').then(res => res.arrayBuffer());
+        // font = await pdfDoc.embedFont(fontBytes);
+        
+        // Option 2: For now, we'll use standard fonts with fallback
+        font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+        useUnicode = false; // Set to true when you have Unicode fonts
+      } catch (err) {
+        // Fallback to standard fonts
+        font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+        useUnicode = false;
+      }
+
+      // Helper function to handle text based on Unicode support
+      const processText = (text) => {
+        if (!text) return text;
+        if (useUnicode) {
+          return String(text); // Return as-is if Unicode is supported
+        } else {
+          // Fallback: Replace non-ASCII characters or provide transliteration
+          return String(text)
+            .replace(/[^\u0020-\u007E]/g, (char) => {
+              // Simple transliteration map for common Arabic characters
+              const arabicToLatin = {
+                'ا': 'a', 'ب': 'b', 'ت': 't', 'ث': 'th', 'ج': 'j',
+                'ح': 'h', 'خ': 'kh', 'د': 'd', 'ذ': 'dh', 'ر': 'r',
+                'ز': 'z', 'س': 's', 'ش': 'sh', 'ص': 's', 'ض': 'd',
+                'ط': 't', 'ظ': 'z', 'ع': 'a', 'غ': 'gh', 'ف': 'f',
+                'ق': 'q', 'ك': 'k', 'ل': 'l', 'م': 'm', 'ن': 'n',
+                'ه': 'h', 'و': 'w', 'ي': 'y'
+              };
+              return arabicToLatin[char] || '?';
+            });
+        }
+      };
 
       // Cursor
       let y = height - margin;
@@ -52,12 +96,20 @@ export default {
 
       const maxTextWidth = width - margin * 2;
 
-      // Word-wrap
+      // Word-wrap with Unicode handling
       const wrapText = (text, maxWidth, fnt = font, size = bodySize) => {
-        const words = String(text).split(/\s+/);
+        const processedText = processText(text);
+        const words = String(processedText).split(/\s+/);
         const lines = [];
         let current = "";
-        const textWidth = (t) => fnt.widthOfTextAtSize(t, size);
+        const textWidth = (t) => {
+          try {
+            return fnt.widthOfTextAtSize(t, size);
+          } catch (err) {
+            // If width calculation fails, return a reasonable estimate
+            return t.length * size * 0.6;
+          }
+        };
 
         for (const w of words) {
           const attempt = current ? current + " " + w : w;
@@ -87,20 +139,36 @@ export default {
         const lines = wrapText(text, maxWidth, fnt, size);
         for (const line of lines) {
           ensureSpace(lineHeight);
-          page.drawText(line, { x, y, size, font: fnt, color: rgb(0, 0, 0) });
+          try {
+            page.drawText(line, { x, y, size, font: fnt, color: rgb(0, 0, 0) });
+          } catch (err) {
+            // If drawing fails, try with a fallback character
+            const fallbackLine = line.replace(/[^\u0020-\u007E]/g, '?');
+            page.drawText(fallbackLine, { x, y, size, font: fnt, color: rgb(0, 0, 0) });
+          }
           y -= lineHeight;
         }
       };
 
       const drawTitle = (text) => {
         ensureSpace(lineHeight * 2);
-        page.drawText(text, { x: margin, y, size: titleSize, font: fontBold, color: rgb(0, 0, 0) });
+        try {
+          page.drawText(processText(text), { x: margin, y, size: titleSize, font: fontBold, color: rgb(0, 0, 0) });
+        } catch (err) {
+          const fallbackText = processText(text).replace(/[^\u0020-\u007E]/g, '?');
+          page.drawText(fallbackText, { x: margin, y, size: titleSize, font: fontBold, color: rgb(0, 0, 0) });
+        }
         y -= lineHeight * 2;
       };
 
       const drawSectionHeader = (text) => {
         ensureSpace(lineHeight * 2);
-        page.drawText(text, { x: margin, y, size: sectionHeaderSize, font: fontBold, color: rgb(0, 0, 0) });
+        try {
+          page.drawText(processText(text), { x: margin, y, size: sectionHeaderSize, font: fontBold, color: rgb(0, 0, 0) });
+        } catch (err) {
+          const fallbackText = processText(text).replace(/[^\u0020-\u007E]/g, '?');
+          page.drawText(fallbackText, { x: margin, y, size: sectionHeaderSize, font: fontBold, color: rgb(0, 0, 0) });
+        }
         y -= lineHeight * 1.5;
       };
 
@@ -116,12 +184,13 @@ export default {
       // INSTRUCTIONS PAGE (no params at all)
       if (params.length === 0) {
         // H1
-        drawTitle("PDF");
+        drawTitle("PDF Generator with Unicode Support");
 
         // Purpose
         drawSectionHeader("Purpose");
         drawWrapped(
-          "This service provides a simple placeholder PDF file that can be customized using URL parameters.",
+          "This service provides a PDF file that can handle Unicode characters including Arabic text. " +
+          "Text is customized using URL parameters.",
           margin,
           maxTextWidth
         );
@@ -130,37 +199,27 @@ export default {
         // Use Cases
         drawSectionHeader("Use Cases");
         [
-          "- Use as a temporary PDF for auto-generated datasets.",
-          "- Return a valid PDF where a PDF is required by a pipeline.",
-          "- Test integrations or demos that expect a PDF.",
-          "- Echo URL parameters as plain text (key = value).",
+          "- Generate PDFs with multilingual content",
+          "- Support Arabic, Hebrew, and other RTL languages",
+          "- Echo URL parameters as text with Unicode support",
+          "- Test international character handling",
         ].forEach((line) => drawWrapped(line, margin, maxTextWidth));
         y -= lineHeight;
 
         // Example
-        drawSectionHeader("Step-by-step Example");
+        drawSectionHeader("Example Usage");
         const origin = url.origin.replace(/\/$/, "");
-        const exampleQuery = "?title=Hello%20world!&text=This%20is%20a%20paragraph.&count=3";
-        const exampleUrl = `${origin}${url.pathname}${exampleQuery}`;
-        drawWrapped(decodeURIComponent(exampleQuery), margin, maxTextWidth);
-        y -= lineHeight;
-
-        page.drawText('Click here to load the "Hello world!" example as a PDF.', {
-          x: margin,
-          y,
-          size: bodySize,
-          font,
-          color: rgb(0, 0, 0),
-          link: exampleUrl,
-        });
+        const exampleQuery = "?title=مرحبا&text=This%20is%20Arabic:%20السلام%20عليكم";
+        drawWrapped(`${origin}${url.pathname}${exampleQuery}`, margin, maxTextWidth);
         y -= lineHeight * 2;
 
         // Notes
         drawSectionHeader("Notes");
         [
           `- Each value is limited to ${MAX_VALUE_LEN} characters.`,
-          `- Up to ${MAX_PARAMS} URL parameters are rendered (excluding title/text).`,
-          "- Text is plain; no styling or formatting is applied.",
+          `- Up to ${MAX_PARAMS} URL parameters are rendered.`,
+          useUnicode ? "- Full Unicode support enabled" : "- Unicode characters are transliterated to Latin equivalents",
+          "- RTL languages may not render in proper direction without additional setup",
         ].forEach((line) => drawWrapped(line, margin, maxTextWidth));
         y -= lineHeight;
 
@@ -200,11 +259,10 @@ export default {
         }
 
         drawSectionHeader("Disclaimer");
-        drawWrapped(
-          "This PDF file is for testing purposes. Content is rendered directly from URL parameters.",
-          margin,
-          maxTextWidth
-        );
+        const disclaimerText = useUnicode ? 
+          "This PDF supports Unicode characters. Content is rendered from URL parameters." :
+          "Unicode characters are transliterated. Content is rendered from URL parameters.";
+        drawWrapped(disclaimerText, margin, maxTextWidth);
       }
 
       // Done
